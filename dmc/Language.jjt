@@ -1,0 +1,761 @@
+options{
+    IGNORE_CASE=false;
+    JJTREE_OUTPUT_DIRECTORY="src/wci/frontend";
+    NODE_EXTENDS="wci.intermediate.icodeimpl.ICodeNodeImpl";
+    MULTI=true;
+    VISITOR=true;
+    DEBUG_PARSER=false;
+}
+
+PARSER_BEGIN(Language)
+package wci.frontend;
+
+import java.util.ArrayList;
+import java.util.HashSet;
+import java.io.*;
+
+import wci.intermediate.*;
+import wci.backend.*;
+import wci.util.*;
+
+import wci.intermediate.symtabimpl.*;
+import wci.intermediate.typeimpl.*;
+import wci.intermediate.symtabimpl.SymTabKeyImpl.*;
+import wci.intermediate.symtabimpl.DefinitionImpl.*;
+
+import static wci.intermediate.symtabimpl.SymTabKeyImpl.*;
+import static wci.intermediate.symtabimpl.DefinitionImpl.*;
+import static wci.intermediate.symtabimpl.RoutineCodeImpl.*;
+import static wci.intermediate.symtabimpl.SymTabKeyImpl.*;
+import static wci.intermediate.icodeimpl.ICodeKeyImpl.*;
+
+public class Language
+{
+    private static final String SOURCE_SUFFIX = ".pcl";
+    private static final String OUTPUT_SUFFIX = ".j";
+
+    private static SymTabStack symTabStack;
+    private static SymTabEntry programId;
+
+    public static void main(String[] args)
+        throws Exception
+    {
+    	// Create and initialize the symbol table stack.
+        symTabStack = SymTabFactory.createSymTabStack();
+        Predefined.initialize(symTabStack);
+
+        // Process the source file path which ends in .pcl
+        // and create the output file path which ends in .j
+        String sourceFilePath = args[0];
+        int truncatedLength = sourceFilePath.length() - SOURCE_SUFFIX.length();
+        int suffixIndex = sourceFilePath.lastIndexOf(SOURCE_SUFFIX);
+        String objectFilePath = (suffixIndex == truncatedLength)
+            ? sourceFilePath.substring(0, truncatedLength) + OUTPUT_SUFFIX
+            : sourceFilePath + OUTPUT_SUFFIX;
+
+        // Parse a Pcl program.
+        Reader    reader = new FileReader(sourceFilePath);
+        Language parser = new Language(reader);
+        SimpleNode rootNode = parser.Program();
+		
+        // Print the cross-reference table.
+        CrossReferencer crossReferencer = new CrossReferencer();
+        crossReferencer.print(symTabStack);
+        	
+
+        // Visit the parse tree nodes to decorate them with type information.
+        TypeSetterVisitor typeVisitor = new TypeSetterVisitor();
+        rootNode.jjtAccept(typeVisitor, null);
+
+        // Create and initialize the ICode wrapper for the parse tree.
+        ICode iCode = ICodeFactory.createICode();
+        iCode.setRoot(rootNode);
+        programId.setAttribute(ROUTINE_ICODE, iCode);
+        
+        // Print the parse tree.
+        ParseTreePrinter treePrinter = new ParseTreePrinter(System.out);
+        treePrinter.print(symTabStack);
+
+		// Create the compiler backend and generate code.
+        Backend backend = BackendFactory.createBackend("compile");
+        backend.process(iCode, symTabStack, objectFilePath);
+		
+			
+    }
+}
+PARSER_END(Language)
+
+
+/*****************************************************************************
+
+	Language Tokens
+
+******************************************************************************/
+
+SKIP : {
+   <IGNORE : [" ", "\t", "\n", "\r"]> |
+   <IGNORE2: <SINGLE_LINE_COMMENT> >
+}
+
+/**
+ *	Private Helper Tokens
+ */ 
+TOKEN: {
+	
+	<#LETTER: ["a"-"z","A"-"Z"]> | 
+	<#DIGIT: ["0"-"9"]> |
+	<#WORD: <LETTER> (<LETTER> | <DIGIT>)* >
+}	
+
+
+
+/**
+ *	URL & Domain Tokens
+ *
+ *	A url must begin with a letter or digit and the domain name cannot 
+ *	have two consecutive dots or hyphens at a time between letters or digits. 
+ *	After domain name a forward slash separates sub sections
+ */
+ 
+TOKEN : {
+
+	// Consider spliting parts of URL into their own private tokens (e.g., PREFIX, DOMAIN, SUFFIX)
+	<URL : <QUOTATION_MARK> "http" (["s"])? "://" ( (<WORD> | <DIGIT>)+ (<DOT> | <MINUS>)? )+ "." <WORD> ("/" (<WORD> | <DIGIT> | ["-", "_", ".", "&", "?", "="])* )* <QUOTATION_MARK>  >
+	|
+	
+	<DOMAIN:((<WORD> | <DIGIT>)+ ([".","-"])?)+ "." (<WORD>)+> |
+	
+	<BOOLEAN: "True" | "False">
+}
+
+
+/**
+ *	Character and String Tokens
+ */
+
+TOKEN : {
+
+	<SINGLE_LINE_COMMENT: "--" (~["\n", "\r"])* > | 
+	
+	<STRING : ["\""] (~["\"", "\n", "\r"])* ["\""] >
+
+}
+
+
+/**
+ *	Number Tokens
+ */
+
+TOKEN:
+{
+	<INTEGER: <DIGIT> (<DIGIT>)*> |
+	
+	<REAL: (<DIGIT>)* "." (<DIGIT>)+ >
+	
+}
+ 
+ 
+/**
+ *	Reserved Word Tokens
+ */
+ 
+TOKEN : {
+	
+	<FOREACH : "foreach"> |
+	
+	<IN : "in"> |
+	
+	<ELSE : "else"> |
+	
+	<ELSEIF : "elseif"> |
+	
+	<IF : "if"> |
+	
+	<FOR : "for" >|
+
+	< FUNCTION: "function" >|
+	< VOID: "void" >|
+	< RETURN: "return" >|
+	< DISPLAY: "display" >
+	
+}
+
+
+/**
+ *	Data Types
+ * 		Data types must begin with a capital letter
+ */
+TOKEN : {
+
+	<BOOLEAN_TYPE : "Boolean"> |
+
+	<DOMAIN_TYPE : "Domain"> |
+	
+	<INTEGER_TYPE : "Integer"> |
+	
+	<INTEGER_LIST_TYPE :"List[Integer]" > |
+		<REAL_LIST_TYPE :"List[Real]" > |
+			<STRING_LIST_TYPE :"List[String]" > |
+	<REAL_TYPE : "Real"> |
+	
+	<STRING_TYPE : "String"> |
+	
+	<URL_TYPE : "Url">
+	
+}
+
+
+/**
+ *	Special Symbol Tokens
+ */
+
+TOKEN : {
+	<LESS_EQUALS : "<="> |
+	
+	<GREATER_EQUALS : ">="> |
+	
+	<PLUS_EQUALS : "+="> |
+	
+	<MINUS_EQUALS : "-="> |
+	
+	<STAR_EQUALS : "*="> |
+	
+	<EQUALS : "=="> |
+	
+	<MODULUS_EQUALS : "%="> |
+	
+	<NOT_EQUALS : "<>"> |
+	
+	<MODULUS : "%"> |
+	
+	<STAR : "*"> |
+	
+	<DIVIDE : "/"> |
+	
+	<MINUS : "-"> |
+	
+	<PLUS : "+"> |
+	
+	<ASSIGNMENT : "="> |
+	
+	<SEMICOLON : ";"> |
+	
+	<LESS_THAN : "<"> |
+	
+	<GREATER_THAN : ">"> |
+	
+	<QUOTATION_MARK : "\""> |
+	
+	<LEFT_PAREN : "("> |
+	
+	<RIGHT_PAREN : ")"> |
+	
+	<LEFT_BRACE : "{"> |
+	
+	<RIGHT_BRACE : "}"> |
+	
+	<DOT : "."> |
+	
+	<DOLLAR_SIGN : "$"> |
+	< COLON : ":" >|
+	<COMMA : ",">|
+	< OPBR : "[" >|
+	< CLBR : "]" >
+
+}	
+
+
+/**
+ *	Identifier
+ */
+TOKEN : {
+
+	<IDENTIFIER: <LETTER> ("_" | <LETTER> | <DIGIT>)* >
+}
+
+TOKEN: { /*	Error token */
+    <ERROR : ~["\r", "\n"]> |
+    <EOL     : ["\r", "\n"]>
+}
+
+/*****************************************************************************
+
+	Language Productions
+
+******************************************************************************/
+
+/* Based on PLC */
+SimpleNode Program() #Program : {
+  	SimpleNode rootNode;
+	programId = symTabStack.enterLocal("");
+    programId.setDefinition(DefinitionImpl.PROGRAM);
+    programId.setAttribute(ROUTINE_SYMTAB, symTabStack.push());
+    symTabStack.setProgramId(programId);
+}
+{
+
+	
+  
+	/* Try parsing statements */
+    try {
+        rootNode = StatementList()  {
+            return rootNode;
+        }
+    }
+    catch (ParseException ex) {
+        HashSet syncSet = new HashSet();
+        syncSet.add(EOF);
+        
+        handleError(ex, syncSet, true);
+        return null;
+    }
+}
+
+/* 
+   Based on PLC -  
+	Removed error checking code.
+	Removed #void.
+*/
+SimpleNode StatementList () : {
+	HashSet syncSet = new HashSet();
+    syncSet.add(SEMICOLON);
+    syncSet.add(EOF);
+}
+{
+	(  Statement(syncSet)  )*
+	//(BlockStatement() | Statement() )*
+	
+	{ return jjtThis; }
+}
+
+
+
+/* 
+	Based on PLC - 
+		Removed Assignment, MethodCall
+*/
+void Statement(HashSet syncSet) #void : {}
+{
+    try 
+	{
+		FuncCall()
+		|BlockStatement()
+		| Function()
+		| VariableDeclaration(0)
+		| AssignmentStatement() 
+		| display()
+		| Error() 
+			{ throw new ParseException(); }
+    }
+    catch (ParseException ex) {
+         handleError(ex, syncSet, false);
+    }
+	
+	<SEMICOLON>
+}
+
+void BlockStatement () #void : {Token t;}
+{ 
+	IfStatement() | ForStatement()
+}
+
+/* mks */
+Token VariableDeclaration(int x)#TypeSpec : {ArrayList<SymTabEntry> variableList;
+	                                 int index = 0;}
+{
+	TypeSpecification()
+	{
+		Token typeSpecToken = token;
+   		
+	}
+
+	<DOLLAR_SIGN> <IDENTIFIER>
+	{
+	  		variableList = new ArrayList<SymTabEntry>();
+            processVariableDecl(token, index++, variableList);
+			
+			SymTabEntry typeId = symTabStack.lookup(typeSpecToken.image);
+            typeId.appendLineNumber(typeSpecToken.beginLine);
+            TypeSpec type = typeId.getTypeSpec();
+			jjtThis.setTypeSpec(type);
+			if(x==1)
+			jjtThis.setAttribute(ID, token.image);
+            for (SymTabEntry variableId : variableList) {
+              if(x ==1)
+                variableId.setTypeSpec(Predefined.funcParamType);
+                else
+                variableId.setTypeSpec(type);
+            }
+            return typeSpecToken;
+	}
+
+		 
+
+	{
+        programId.setAttribute(ROUTINE_LOCALS_COUNT, index);
+    }
+    
+}
+
+void display() #display:{}{
+  < DISPLAY ><LEFT_PAREN >Factor()< RIGHT_PAREN >}
+  
+void ForStatement() #For : {Token t;}
+{
+	<FOR> 
+		<LEFT_PAREN> 
+		AssignmentStatement()<SEMICOLON>
+		 BooleanExpression()  <SEMICOLON> 
+		AssignmentStatement()  
+		<RIGHT_PAREN>
+		<LEFT_BRACE> 
+		StatementList() 
+		<RIGHT_BRACE>
+		 
+}
+
+void IfStatement () #IF : {Token t;}
+{
+	<IF>
+		( IfBlockStructure() ) //#IF(1)
+	
+	( 
+	
+	(<ELSEIF> IfBlockStructure() #ELSEIF(2))*  
+
+	
+		  <ELSE> 
+	( ElseBlockStructure() ) #ELSE
+		
+	)?
+}
+
+void IfBlockStructure () #void : {Token t;}
+{
+	<LEFT_PAREN> BooleanExpression() <RIGHT_PAREN> <LEFT_BRACE> StatementList() <RIGHT_BRACE>
+}
+void ElseBlockStructure () #void : {Token t;}
+{
+	<LEFT_BRACE> StatementList() <RIGHT_BRACE>
+}
+
+
+void BooleanExpression () #RelOp : {Token t;}
+{
+	Factor() 
+	
+	RelationalOp()
+	  Factor()
+	 //#RelOp(2)
+}
+
+void AssignmentStatement () : {}
+{	
+	Variable() {
+        SymTabEntry variableId = symTabStack.lookup(token.image);
+        variableId.appendLineNumber(token.beginLine);
+    }
+    (listType())?
+	<ASSIGNMENT>
+	
+	Expression() 
+	(listType())?
+	
+}
+
+void TypeSpecification () #void : {Token token;}
+{
+	<BOOLEAN_TYPE> | <URL_TYPE> | <DOMAIN_TYPE> | <INTEGER_TYPE> | <STRING_LIST_TYPE>  |<REAL_LIST_TYPE>  | <INTEGER_LIST_TYPE>  | <REAL_TYPE> | <STRING_TYPE>
+}
+
+void Variable () #Variable : {}
+{
+	<DOLLAR_SIGN> 
+	<IDENTIFIER> {
+        SymTabEntry variableId = symTabStack.lookup(token.image);
+        variableId.appendLineNumber(token.beginLine);
+        TypeSpec type = variableId.getTypeSpec();
+        jjtThis.setTypeSpec(type);
+        jjtThis.setAttribute(ID, variableId);
+    }
+}
+
+void Function ()#Func : {
+	// for declaration
+	ArrayList<SymTabEntry> functionList;
+	int index = 0;
+	// for definition
+	HashSet syncSet = new HashSet();
+    syncSet.add(SEMICOLON);
+    syncSet.add(EOF);
+}
+{
+	// function foo (Integer $x, Integer $y):void
+	<FUNCTION> 
+	<IDENTIFIER>{
+		functionList = new ArrayList<SymTabEntry>();
+		processFunctionDecl(token, index++, functionList);
+		
+		SymTabEntry typeId = symTabStack.lookup(token.image);
+		typeId.appendLineNumber(token.beginLine);
+		TypeSpec type = typeId.getTypeSpec();
+
+		for (SymTabEntry functionId : functionList) {
+			functionId.setTypeSpec(Predefined.funcType);
+		}
+		
+		SymTabEntry functionId = symTabStack.lookup(token.image);
+        functionId.appendLineNumber(token.beginLine);
+        type = functionId.getTypeSpec();
+        jjtThis.setTypeSpec(type);
+        jjtThis.setAttribute(ID, functionId);
+		
+	}
+	
+	<LEFT_PAREN>FuncParams()<RIGHT_PAREN> <COLON> FuncReturnType()
+	<LEFT_BRACE>
+	StatementList()
+	< RETURN > (Factor())?< SEMICOLON >
+	<RIGHT_BRACE>
+
+		{
+        programId.setAttribute(ROUTINE_LOCALS_COUNT, index);
+    }
+}
+void FuncCall() #FuncCall : {}
+{ 
+	FuncVar()
+	{
+	  jjtThis.setTypeSpec(Predefined.funcCallType);
+	}
+}
+void FuncVar() #FuncVar:{}{
+  	<IDENTIFIER> {
+        SymTabEntry variableId = symTabStack.lookup(token.image);
+        variableId.appendLineNumber(token.beginLine);
+        TypeSpec type = variableId.getTypeSpec();
+        jjtThis.setTypeSpec(type);
+        jjtThis.setAttribute(ID, variableId);
+    }
+    <LEFT_PAREN>
+	( Factor() ( < COMMA > Factor() )? )*
+    <RIGHT_PAREN>
+}
+  
+
+
+void FuncParams() #FuncParams:{}{{int x;  x =1;
+} (VariableDeclaration(x) (< COMMA >VariableDeclaration(x)) *)?
+}
+
+void FuncReturnType() #FuncReturnType:{}{
+  (<VOID> | listItemType())}
+
+/* new stuff! */
+
+void Expression () #void : {}
+{
+	SimpleExpression() | listSize() | FuncCall()//( RelationalOp() SimpleExpression() )?
+}
+
+
+void SimpleExpression() #void : {}
+{
+	(<PLUS> | <MINUS> )?
+    Term() (
+        <PLUS> Term() #Add(2)
+      | <MINUS> Term() #Subtract(2)
+    )*     
+}
+
+void Term () #void : {Token t;}
+{
+	Factor() (
+			<STAR> Factor() #MultOp(2)
+		|	<DIVIDE> Factor() #DivOp(2)
+	)*
+}
+
+void Factor () #void : {}
+{
+	Variable() | 
+	SimpleType() //| 
+	/*( <LEFT_PAREN> Expression() <RIGHT_PAREN> ) | 
+	MethodCall()*/
+}
+
+void SimpleType () #void: {Token t;}
+{
+		integerConstant() |
+		realConstant() |
+		stringConstant()
+		/*
+		t = <STRING> {jjtThis.setImage(t.image);} | 
+		t = <URL> {jjtThis.setImage(t.image);} | 
+		t = <DOMAIN> {jjtThis.setImage(t.image);} | 
+		t = <BOOLEAN> {jjtThis.setImage(t.image);}
+		*/
+}
+
+
+void RelationalOp () : {Token t;}
+{
+	t = <EQUALS> {
+        jjtThis.setTypeSpec(Predefined.relType);
+        jjtThis.setAttribute(VALUE, token.image);}| 
+	t = <NOT_EQUALS> {
+        jjtThis.setTypeSpec(Predefined.relType);
+        jjtThis.setAttribute(VALUE, token.image);} | 
+	t = <LESS_EQUALS> {
+        jjtThis.setTypeSpec(Predefined.relType);
+        jjtThis.setAttribute(VALUE, token.image);} | 
+	t = <GREATER_EQUALS> {
+        jjtThis.setTypeSpec(Predefined.relType);
+        jjtThis.setAttribute(VALUE, token.image);} | 
+	t = <LESS_THAN> {
+        jjtThis.setTypeSpec(Predefined.relType);
+        jjtThis.setAttribute(VALUE, token.image);} | 
+	t = <GREATER_THAN> {
+        jjtThis.setTypeSpec(Predefined.relType);
+        jjtThis.setAttribute(VALUE, token.image);}
+	
+}
+////////////////////////////////////////////////////////////////
+void listSize() #ListSize: {Token t;}//D.M.
+{
+  < OPBR >(integerConstant()|Variable())<CLBR >
+  
+}
+
+void listItemType():{}{
+   <INTEGER_TYPE>{
+        jjtThis.setTypeSpec(Predefined.integerType);
+        jjtThis.setAttribute(VALUE, token.image);}
+        | <STRING_TYPE>{
+        jjtThis.setTypeSpec(Predefined.stringType);
+        jjtThis.setAttribute(VALUE, token.image);
+    }|
+    < REAL_TYPE >    {
+      jjtThis.setTypeSpec(Predefined.realType);
+        jjtThis.setAttribute(VALUE, token.image);    }|
+        < URL_TYPE >
+    {
+      jjtThis.setTypeSpec(Predefined.urlType);
+        jjtThis.setAttribute(VALUE, token.image);
+    }|
+       <INTEGER_LIST_TYPE>{
+        jjtThis.setTypeSpec(Predefined.intListType);
+        jjtThis.setAttribute(VALUE, token.image);}
+        | <STRING_LIST_TYPE>{
+        jjtThis.setTypeSpec(Predefined.stringListType);
+        jjtThis.setAttribute(VALUE, token.image);
+    }|
+    < REAL_LIST_TYPE >
+    {
+      jjtThis.setTypeSpec(Predefined.realListType);
+        jjtThis.setAttribute(VALUE, token.image);
+    }
+  
+}
+void listType() #ListIndex: {Token t;}//D.M.
+{
+< OPBR >(integerConstant()| Variable())<CLBR >
+  
+}
+
+void integerConstant() : {}
+{
+    <INTEGER> {
+        jjtThis.setTypeSpec(Predefined.integerType);
+        jjtThis.setAttribute(VALUE, Integer.parseInt(token.image));
+    }
+}
+void realConstant() : {}
+{
+    <REAL> {
+        jjtThis.setTypeSpec(Predefined.realType);
+        jjtThis.setAttribute(VALUE, Float.parseFloat(token.image));
+    }
+}
+
+void stringConstant() : {}
+{
+    <STRING> {
+        jjtThis.setTypeSpec(Predefined.stringType);
+        jjtThis.setAttribute(VALUE, token.image);
+    }
+}
+
+void Error() #void : {}
+{
+    <ERROR>
+}
+
+
+
+JAVACODE
+/* Original version */
+void processVariableDeclOrg(Token tokenoken, int index,
+                         ArrayList<SymTabEntry> variableList) #void
+{
+    SymTabEntry variableId = symTabStack.enterLocal(token.image);
+    variableId.setIndex(index);
+    variableId.setDefinition(DefinitionImpl.VARIABLE);
+    variableId.appendLineNumber(token.beginLine);
+    variableList.add(variableId);
+}
+
+/* Based on PLC. Includes code from DM */
+JAVACODE
+void processVariableDecl_silva(Token tokenoken, SymTabStack symTabStack) #void
+{
+	SymTabEntry variableId = symTabStack.lookupLocal(token.image);
+	  						
+	if (variableId != null) {
+		variableId.appendLineNumber(token.beginLine);
+	}
+
+	else {
+		variableId = symTabStack.enterLocal(token.image);
+		variableId.appendLineNumber(token.beginLine);
+		variableId.setDefinition(DefinitionImpl.VARIABLE);
+		variableId.setAttribute(ROUTINE_SYMTAB, token.image);
+	}
+}
+
+JAVACODE
+void processVariableDecl(Token token, int index,
+                         ArrayList<SymTabEntry> variableList) #void
+{
+    SymTabEntry variableId = symTabStack.enterLocal(token.image);
+    variableId.setIndex(index);
+    variableId.setDefinition(DefinitionImpl.VARIABLE);
+    variableId.appendLineNumber(token.beginLine);
+    variableList.add(variableId);
+}
+
+JAVACODE
+void processFunctionDecl(Token token, int index,
+                         ArrayList<SymTabEntry> funcList) #void
+{
+    SymTabEntry funcId = symTabStack.enterLocal(token.image);
+    funcId.setIndex(index);
+    funcId.setDefinition(DefinitionImpl.FUNCTION);
+    funcId.appendLineNumber(token.beginLine);
+    funcList.add(funcId);
+}
+
+JAVACODE
+String handleError(ParseException ex, HashSet syncSet, boolean doPop) #void
+{
+    Token tokenoken = ex.currentToken;
+    System.out.println(ex.getMessage());
+
+    // Consume tokens up to but not including a token in the sync set.
+    while (!syncSet.contains(getToken(1).kind)) {
+        token = getNextToken();
+    } 	
+
+    if (doPop) jjtree.popNode();
+    return token.image;
+}

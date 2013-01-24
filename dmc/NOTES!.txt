@@ -1,0 +1,18 @@
+Change the JJT file.  Do not change the backend until it simply doesn't have a necessary feature.
+
+
+To make changes to...
+
+
+Predefined types:
+	wci.intermediate.symtabimpl.predefined
+	(match what's in frontend.pclparservisitor.java)
+
+Predefined routines: 
+	wci.intermeidate.symtablimpl.predefined.java
+	wci.intermediate.symtabimpl.routinecodeimpl.java	
+
+New generators:
+	wci.backend.compiler.codegeneratorvisitorjasmin.java
+		(existing visit() need to had the first parameter capitalized)
+	wci.intermediate.typesettervisitor.java (<-changing this resolved the type adding problem)
